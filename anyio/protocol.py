@@ -1,10 +1,13 @@
 # anyio/protocol.py  20/04/2014  D.J.Whale
-# Updated 2026-04-07: Python 3 fixes, cleanup closes wire, read timeout
+# Updated 2026-04-07: Full RTk.GPIO v2 protocol, dual v1/v2 firmware support
+#   - pull up/down/none (U/D/N)
+#   - hardware SPI (~XX → YY)
+#   - version query (V)
+#   - board reset (R → OK for v2)
+#   - 28 pins (GP0-GP27)
+#   - auto-detect enhanced mode (v2) via R probe
 
-# Eventually there will be sub modules to the protocol
-# to include I2C, SPI, Uart, PWM, code load, and other stuff.
-# For now, it only supports the GPIO module and it is loaded
-# as the default context
+import time
 
 
 def trace(msg):
@@ -16,12 +19,22 @@ def error(msg):
 IN  = 0
 OUT = 1
 
+PULL_UP   =  1
+PULL_DOWN =  0
+PULL_NONE = -1
+
+PIN_COUNT = 28
+
 GPIO_MODE_INPUT  = "I"
 GPIO_MODE_OUTPUT = "O"
 
 GPIO_READ       = "?"
 GPIO_VALUE_HIGH = "1"
 GPIO_VALUE_LOW  = "0"
+
+GPIO_PULL_UP    = "U"
+GPIO_PULL_DOWN  = "D"
+GPIO_PULL_NONE  = "N"
 
 def _pinch(channel):
   return chr(channel + ord('a'))
@@ -36,6 +49,13 @@ def _modech(mode):
     return GPIO_MODE_INPUT
   return GPIO_MODE_OUTPUT
 
+def _pullch(pull):
+  if pull == PULL_UP or pull == 1:
+    return GPIO_PULL_UP
+  elif pull == PULL_DOWN or pull == 0:
+    return GPIO_PULL_DOWN
+  return GPIO_PULL_NONE
+
 def _parse_valuech(ch):
   if isinstance(ch, int):
     ch = chr(ch)
@@ -46,19 +66,38 @@ def _parse_valuech(ch):
   error("Unknown value ch:" + repr(ch))
   return False
 
+def _nibble_to_hex(n):
+  return "0123456789ABCDEF"[n & 0xF]
+
+def _hex_to_nibble(ch):
+  if isinstance(ch, int):
+    ch = chr(ch)
+  if '0' <= ch <= '9':
+    return ord(ch) - ord('0')
+  if 'A' <= ch <= 'F':
+    return ord(ch) - ord('A') + 10
+  if 'a' <= ch <= 'f':
+    return ord(ch) - ord('a') + 10
+  return 0
+
 
 # CLIENT ===============================================================
-# Client will be constructed like: g = GPIOClient(Serial("/dev/ttyAMC0"))
-# Client will be called via an interface just like RPi.GPIO
 
 class GPIOClient:
-  """ The GPIO command set
-      Assumes the wire protocol is already in the GPIO mode.
-      As we only support the GPIO module at the moment,
-      that's a simple assumption to make.
+  """Full RTk.GPIO protocol client.
+
+  Supports v1 (2016) and v2 (2022+) firmware with auto-detection.
+  v2 features: R(reset→OK), no \\r\\n on read, HW SPI.
+  v1 features: read returns pin+value+\\r\\n, no R/SPI.
+
+  28 pins (GP0-GP27). Pull up/down/none. Version query.
   """
   IN = 0
   OUT = 1
+  PULL_UP   =  1
+  PULL_DOWN =  0
+  PULL_NONE = -1
+  PIN_COUNT = 28
   DEBUG = False
 
   def trace(self, msg):
@@ -68,6 +107,34 @@ class GPIOClient:
   def __init__(self, wire, debug=False):
     self.wire = wire
     self.DEBUG = debug
+    self.enhanced = False  # v2 firmware detected
+    self._probe_firmware()
+
+  def _probe_firmware(self):
+    """Probe for v2 firmware by sending R and checking for OK response."""
+    try:
+      # Drain any pending data
+      self.wire.read(64, minsize=0, timeout=0.1)
+    except Exception:
+      pass
+    try:
+      self._write("R")
+      time.sleep(0.15)
+      resp = self._read(2, timeout=0.3)
+      if len(resp) >= 2 and resp[0:2] == b'OK':
+        self.enhanced = True
+        self.trace("Firmware: v2 (enhanced mode)")
+      else:
+        self.enhanced = False
+        self.trace("Firmware: v1 (legacy mode)")
+    except Exception:
+      self.enhanced = False
+      self.trace("Firmware: v1 (probe failed, assuming legacy)")
+    # Drain any remaining data after probe
+    try:
+      self.wire.read(64, minsize=0, timeout=0.1)
+    except Exception:
+      pass
 
   def setmode(self, mode):
     # BCM or BOARD, only for compatibility with RPi.GPIO
@@ -80,21 +147,27 @@ class GPIOClient:
 
   def input(self, channel):
     pinch = _pinch(channel)
-    self._write(pinch + GPIO_READ + "\n")
-    retries = 0
-    while retries < 10:
-      v = self._read(3, termset="\r\n")
-      if len(v) >= 2:
-        break
-      self.trace("retrying read (%d)" % retries)
-      retries += 1
+    self._write(pinch + GPIO_READ)
+
+    if self.enhanced:
+      # v2: response is 2 bytes: pin_char + value (no \r\n)
+      v = self._read(2, timeout=0.5)
+    else:
+      # v1: response is pin_char + value + \r\n (4 bytes)
+      retries = 0
+      v = b''
+      while retries < 10:
+        v = self._read(4, termset="\r\n", timeout=0.5)
+        if len(v) >= 2:
+          break
+        self.trace("retrying read (%d)" % retries)
+        retries += 1
 
     if len(v) < 2:
-      error("No response for pin %d after %d retries" % (channel, retries))
+      error("No response for pin %d" % channel)
       return False
 
-    self.trace("input read back:" + repr(v) + " len:" + str(len(v)))
-    # Response is bytes on Python 3: b'<pin><value>\r\n'
+    self.trace("input read back:" + repr(v))
     valuech = v[1]
     return _parse_valuech(valuech)
 
@@ -102,6 +175,50 @@ class GPIOClient:
     ch = _pinch(channel)
     v = _valuech(value)
     self._write(ch + v)
+
+  def pull(self, channel, mode):
+    """Set pull-up/pull-down/none on a pin.
+    mode: PULL_UP (1), PULL_DOWN (0), PULL_NONE (-1)
+    """
+    ch = _pinch(channel)
+    p = _pullch(mode)
+    self._write(ch + p)
+
+  def spi_transfer(self, data):
+    """Hardware SPI transfer (v2 only). Send one byte, receive one byte.
+    Uses GP11=SCK, GP10=MOSI, GP9=MISO.
+    Returns received byte, or None if not supported.
+    """
+    if not self.enhanced:
+      error("spi_transfer requires v2 firmware")
+      return None
+    hi = _nibble_to_hex((data >> 4) & 0xF)
+    lo = _nibble_to_hex(data & 0xF)
+    self._write("~" + hi + lo)
+    resp = self._read(2, timeout=0.5)
+    if len(resp) >= 2:
+      r_hi = _hex_to_nibble(resp[0])
+      r_lo = _hex_to_nibble(resp[1])
+      return (r_hi << 4) | r_lo
+    return 0
+
+  def version(self):
+    """Query firmware version string."""
+    self._write("V")
+    time.sleep(0.1)
+    resp = self._read(64, termset="\r\n", timeout=0.5)
+    if resp:
+      return resp.decode('ascii', errors='replace').strip()
+    return ""
+
+  def reset(self):
+    """Soft reset the board. Returns True if v2 firmware acknowledged."""
+    self._write("R")
+    time.sleep(0.15)
+    resp = self._read(2, timeout=0.3)
+    if len(resp) >= 2:
+      return resp[0:2] == b'OK'
+    return False
 
   def cleanup(self):
     try:
@@ -118,9 +235,9 @@ class GPIOClient:
     self.trace("write:" + repr(args))
     self.wire.write(*args, **kwargs)
 
-  def _read(self, *args, **kwargs):
-    self.trace("read")
-    return self.wire.read(*args, **kwargs)
+  def _read(self, maxsize=1, **kwargs):
+    self.trace("read(%d)" % maxsize)
+    return self.wire.read(maxsize, **kwargs)
 
   def _close(self):
     self.trace("close")

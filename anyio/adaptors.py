@@ -28,6 +28,11 @@ class SerialAdaptor:
     if minsize is None:
       minsize = maxsize
 
+    # Apply timeout to serial if specified
+    old_timeout = self.serial.timeout
+    if timeout is not None:
+      self.serial.timeout = timeout
+
     remaining = maxsize
     if termset is not None:
       readsz = 1
@@ -38,18 +43,26 @@ class SerialAdaptor:
       readsz = remaining
 
     buf = b''
+    deadline = time.time() + (timeout if timeout else 2.0)
 
     while len(buf) < minsize:
+      if time.time() > deadline:
+        break
       data = self.serial.read(readsz)
       if len(data) == 0:
-        time.sleep(0.01)  # prevent CPU hogging
+        if minsize == 0:
+          break  # non-blocking drain
+        time.sleep(0.01)
       else:
         buf = buf + data
         remaining -= len(data)
         if termset is not None:
-          # data[0] is int on Python 3, so check membership in bytes
           if bytes([data[0]]) in termset or data[0] in termset:
             break  # terminator seen
+
+    # Restore original timeout
+    if timeout is not None:
+      self.serial.timeout = old_timeout
 
     return buf
 
