@@ -111,40 +111,38 @@ class GPIOClient:
     self._probe_firmware()
 
   def _probe_firmware(self):
-    """Probe for v2 firmware by sending V (version query).
+    """Detect firmware version via R (reset) command.
 
-    V is safe on both v1 and v2:
-    - v1: ignores unknown commands (no response or garbage)
-    - v2: returns version string ending with \\n
-    We detect v2 by looking for 'v2' in the response.
-    R command is NOT safe for probing — v1 interprets 'R' as pin 17 latch.
+    v2.1+: R resets board and returns "OK"
+    v1: R is interpreted as pin 17 latch (no response, harmless)
+
+    After probe, drain any leftover data.
     """
     # Drain any pending startup data
-    time.sleep(0.3)
+    time.sleep(0.5)
     try:
-      self.wire.read(128, minsize=0, timeout=0.2)
+      self.wire.serial.reset_input_buffer()
     except Exception:
       pass
 
     try:
-      self._write("V")
-      time.sleep(0.3)
-      resp = self._read(64, minsize=0, timeout=0.5)
-      resp_str = resp.decode('ascii', errors='replace').strip() if resp else ""
-      if 'v2' in resp_str.lower():
+      self._write("R")
+      time.sleep(0.2)
+      resp = self._read(2, timeout=0.5)
+      if len(resp) >= 2 and resp[0:2] == b'OK':
         self.enhanced = True
-        self.trace("Firmware: v2 enhanced (%s)" % resp_str)
+        self.trace("Firmware: v2 enhanced (R→OK)")
       else:
         self.enhanced = False
-        self.trace("Firmware: v1 legacy")
+        self.trace("Firmware: v1 legacy (no OK from R)")
     except Exception:
       self.enhanced = False
-      self.trace("Firmware: v1 (probe failed, assuming legacy)")
+      self.trace("Firmware: v1 (probe failed)")
 
     # Drain anything left over
     time.sleep(0.1)
     try:
-      self.wire.read(128, minsize=0, timeout=0.1)
+      self.wire.serial.reset_input_buffer()
     except Exception:
       pass
 
@@ -169,12 +167,14 @@ class GPIOClient:
     self._write(pinch + GPIO_READ)
 
     if self.enhanced:
-      # v2 firmware: response is 2 bytes only: pin_char + value
-      v = self._read(2, timeout=0.5)
+      # v2.1: response is pin_char + value + \r\n (no echo)
+      try:
+        self.wire.serial.timeout = 0.5
+        v = self.wire.serial.readline()
+      except Exception:
+        v = b''
     else:
-      # v1 firmware echoes the command AND sends a response, both \n-terminated.
-      # First line: echo (raw pin byte + \n)
-      # Second line: response (pin_ascii + value + \r\n)
+      # v1: echoes raw pin byte + \n, THEN sends pin_ascii + value + \r\n
       try:
         self.wire.serial.timeout = 0.5
         _echo = self.wire.serial.readline()  # discard echo
