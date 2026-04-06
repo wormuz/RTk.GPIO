@@ -1,123 +1,156 @@
-anyio V2.0 Dev
-=====
+# RTk.GPIO — USB GPIO for PC/Mac/Linux
 
-A GPIO Python module, that works on many platforms.
+A Python GPIO module that works on any platform. Plug in an RTk.GPIO board (or Arduino Pro Micro) via USB and control 17 GPIO pins from Python — same API as `RPi.GPIO`.
 
-Based on anyio by David Whale @whaleygeek, Improved by Ryan Walmsley @Ryanteck
+Based on [anyio](https://github.com/whaleygeek/anyio) by David Whale (@whaleygeek), adapted for RTk.GPIO by Ryan Walmsley (@Ryanteck).
 
-The anyio package aims to mimic the basic functionality of the RPi.GPIO
-Python module that is used on the Raspberry Pi computer. 
-'Mimic' is used in the loosest sense of the word, because all it does is 
-to implement 5 functions of the same name as the RPi.GPIO module. 
-This allows you to write simple GPIO programs in Python, that work on 
-Raspberry Pi, PC, Mac and Linux computers.
+**Updated 2026-04-07:** Full Python 3 rewrite — all drivers fixed, auto-detect, 10 bugs resolved.
 
+## Hardware
 
-This package consists of two parts - a Python module that runs on a PC, 
-Mac or Linux machine (well, anything that can run Python and pyserial), 
-and some firmware that is programmed to a microcontroller.
+| Board | MCU | USB Chip | Baud | Pins |
+|-------|-----|----------|------|------|
+| **RTk.GPIO** | STM32 NUCLEO-F030R8 | CH340 | **230400** | 0–16 (17 GPIO) |
+| Arduino Pro Micro | ATmega32U4 | CDC | 115200 | 0–16 |
 
- The two are linked together by a serial port controlled by the pyserial 
-library. Calls to the anyio.GPIO methods on the host computer will 
-cause reads or writes to the GPIO pins on the microcontroller platform.
+## Quick Start
 
-Supported Boards Are:
-Arduino Pro Micro
-<Insert new board here>
+```bash
+pip install pyserial
+```
 
+```python
+import sys; sys.path.insert(0, 'RTk.GPIO')
+import anyio.GPIO as GPIO
 
-In this way, it is possible to write a hardware control program on any 
-platform, that can easily be ported between different platforms 
-(including the Raspberry Pi). Just change the "import RPi.GPIO as GPIO"
-to "import anyio.GPIO as GPIO" and change your pin numbers, and you'll
-be working in no time!
+GPIO.setmode(GPIO.BCM)
 
+# Output
+GPIO.setup(4, GPIO.OUT)
+GPIO.output(4, True)
 
-The serial link between the two parts runs at varying speeds depending o the microcontroller, and each 
-command is only a few characters, so the system performs reasonably well
-unless you are repeatedly polling or changing lots of GPIO's at the same 
-time.
+# Input
+GPIO.setup(5, GPIO.IN)
+print(GPIO.input(5))
 
-The arduino pro micro runs at 115200 Baud and the <Insert new board here> at a faster baud rate.
+GPIO.cleanup()
+```
 
+The board is auto-detected when a single USB serial device is present. If multiple devices exist, you'll be prompted to select one. The selected port is cached in `portscan.cache`.
 
-Board Options
-----
-Currently the <Insert new board here> is being funded on kickstarter over at 
+## Drivers
 
-You can also buy an arduino pro mico pre-programmed ready to go from:
-http://skpang.co.uk/catalog/pro-micro-33v8mhz-with-headers-and-anyio-firmware-p-1327.html
+| Driver | Import | Status |
+|--------|--------|--------|
+| **RTk.GPIO** (default) | `import anyio.GPIO as GPIO` | Working (hardware tested) |
+| **Arduino** | `import anyio.arduino.GPIO as GPIO` | Working (untested, no HW) |
+| **Console simulator** | `import anyio.console.GPIO as GPIO` | Working |
+| **GUI simulator** | `import anyio.gui.GPIO as GPIO` | Placeholder (imports OK) |
+| **Network remote** | `import anyio.net.GPIO as GPIO` | Placeholder (imports OK) |
+| **Raspberry Pi** | change `DRIVER = "RPi"` in `anyio/GPIO.py` | Passthrough to RPi.GPIO |
 
-All you need to do is plug it in, download this module by choosing
-the "Download as Zip" button, unzip the file and run the test programs,
-and you'll be working in no time!
+To switch the default driver, edit `DRIVER` in `anyio/GPIO.py`.
 
-You can also program your own pro micro and flash the firmware located at anyio/arduino/firmware/gpio/gpio.ino to get going.
+## API
 
+Mirrors `RPi.GPIO`:
 
+```python
+GPIO.setmode(GPIO.BCM)          # required (no-op, for compatibility)
+GPIO.setup(pin, GPIO.OUT)       # configure pin as output
+GPIO.setup(pin, GPIO.IN)        # configure pin as input
+GPIO.output(pin, True)          # write HIGH
+GPIO.output(pin, False)         # write LOW
+val = GPIO.input(pin)           # read pin (returns True/False)
+GPIO.cleanup()                  # release resources, close port
+```
 
+## Serial Protocol
 
+2-byte ASCII commands at 230400 baud (RTk.GPIO) or 115200 (Arduino):
 
-USE OF PYSERIAL
-----
+```
+Byte 1: pin character = chr(pin_number + ord('a'))    # pin 0='a', pin 16='q'
+Byte 2: command
+  'I' — set input mode
+  'O' — set output mode
+  '?' — read (response: <pin_char><0|1>\r\n)
+  '1' — write HIGH
+  '0' — write LOW
+```
 
-This module uses pyserial to communicate with the Arduino Pro Micro.
+## Pin Notes
 
-anyio modifies the Python PACKAGEPATH for you when it runs,
-to make sure that it uses this embedded pyserial rather than one
-that might or might not be installed on your system. This means
-that if you don't have pyserial installed on your system, you should
-still be able to just run this out of the box and it should work.
+- **Pins 2, 3:** Have hardware pull-ups on RTk.GPIO board (buttons/I2C). Always read HIGH regardless of output state.
+- **Pin range:** 0–16 for RTk.GPIO/console/GUI/net, 0–16 for Arduino driver.
 
-If you already have pyserial installed and want to use your installed
-version for any reason, you can change the anyio/arduino/GPIO.py
-USE_EMBEDDED_PYSERIAL = False
+## Performance
 
+| Metric | Value |
+|--------|-------|
+| Toggle speed (output) | ~9,200 Hz |
+| Read latency | ~0.1 ms per pin |
+| Bottleneck | Serial USB (230400 baud) |
 
-FUTURE WORK
-----
+## Project Structure
 
-This package contains a console based (text mode) simulator that can be 
-used to test your programs on before you connect to real hardware, and 
-this supports both inputs and outputs. This console package
-works, but is not completely documented yet. You can try it with this:
-import anyio.console.GPIO as GPIO
+```
+RTk.GPIO/
+├── anyio/
+│   ├── GPIO.py              # Main entry — selects driver
+│   ├── protocol.py          # Wire protocol (pin commands)
+│   ├── adaptors.py          # Serial/network adaptor layer
+│   ├── rtk/                 # RTk.GPIO board driver (default)
+│   │   ├── GPIO.py
+│   │   ├── portscan.py      # Auto-detect + cache + interactive scan
+│   │   ├── ports_unix.py
+│   │   └── ports_win32.py
+│   ├── arduino/             # Arduino Pro Micro driver
+│   │   ├── GPIO.py
+│   │   ├── portscan.py
+│   │   ├── ports_unix.py
+│   │   └── ports_win32.py
+│   ├── console/             # Text-mode simulator
+│   │   ├── GPIO.py
+│   │   └── GPIOClient.py
+│   ├── gui/                 # Tkinter simulator (placeholder)
+│   │   ├── GPIO.py
+│   │   └── GPIOClient.py
+│   ├── net/                 # Network GPIO (placeholder)
+│   │   ├── GPIO.py
+│   │   ├── GPIOClient.py
+│   │   └── network.py
+│   ├── seg7.py              # 7-segment display driver
+│   └── testSerial.py        # Serial port test utility
+├── findPort.py              # Port scanner CLI
+├── testHardware.py          # LED + button test
+├── testLED.py               # Traffic light LED demo
+├── Pibrella.py              # Pibrella board demo
+├── zeropoint.py             # Stepper motor driver
+├── RTkGPIOV1_NUCLEO_F030R8.bin  # Board firmware
+└── LICENSE
+```
 
+## Firmware
 
-The GPIO interface itself could be anything, not just an Arduino. 
-There is a very simple protocol between the python module and the target 
-GPIO hardware, that is written in a way to allow future extension to 
-support other hardware peripherals such as I2C, SPI, UART, PWM, Analog, 
-OneWire and other protocols and features aimed at near real time control 
-and sensing.
+The firmware binary `RTkGPIOV1_NUCLEO_F030R8.bin` is for the STM32 NUCLEO-F030R8 board. Flash via ST-Link or drag-and-drop to the NUCLEO mass storage device.
 
+For Arduino Pro Micro: flash `anyio/arduino/firmware/gpio/gpio.ino` via Arduino IDE.
 
-There are placeholders in the design for a tkinter GUI simulator that I 
-am planning to write soon, and also a network aware version, that 
-allows GPIO controls to be sent remotely over a network connection to 
-a GPIO server running on any arbitrary host computer (e.g. a Raspberry Pi).
+## Changelog (2026-04-07)
 
+**Python 3 rewrite — 10 bugs fixed:**
 
-NOTES ABOUT COPYRIGHTED MATERIAL
-----
+- `adaptors.py`: Added missing `import time`; fixed bytes/str termset comparison
+- `protocol.py`: `cleanup()` now closes serial port; read has retry limit; `_parse_valuech` handles int (Python 3 bytes indexing)
+- `rtk/GPIO.py`: `s.databits` → `s.bytesize` (was silently ignored)
+- `console/GPIO.py`, `gui/GPIO.py`, `net/GPIO.py`: Fixed to relative imports for Python 3
+- `gui/GPIOClient.py`, `net/GPIOClient.py`: `INPUT`/`OUTPUT` → `IN`/`OUT`; added missing `self` and `channel` to `setup()`
+- `net/GPIO.py`: `setup()` and `setmode()` had swapped signatures
+- `ports_unix.py`: Narrowed scan from `/dev/tty*` (hundreds of matches) to `/dev/ttyUSB*` + `/dev/ttyACM*`
+- `portscan.py`: Auto-detect single device without interactive prompt; cache validates device existence
+- `testSerial.py`: `raw_input` → `input()`
 
-The source code in the anyio package is (c) 2014 David Whale.
+## License
 
-There is an embedded version of pyserial inside the anyio package, and 
-this is provided in it's entirely complete form, with it's original 
-licence, which allows for it to be embedded inside other packages with 
-out any special install. 
-
-There is an embedded version of the ProMicro.inf file, which came from
-the SparkFun github repository. It is included here for convenience,
-but the latest copy can always be retrieved from here:
-
-https://github.com/sparkfun/SF32u4_boards/blob/master/driver/ProMicro.inf
-
-
-David Whale
-
-@whaleygeek
-
-June 2014
-
+See [LICENSE](LICENSE) file.

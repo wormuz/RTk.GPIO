@@ -1,13 +1,14 @@
 # anyio/console/GPIOClient  22/04/2014  D.J.Whale
+# Updated 2026-04-07: Python 3 fixes (thread import, input())
 #
 # A class based interface to the console GPIO simulator
 
 import sys
 
 try:
-  import thread # python2
+  import _thread as thread  # Python 3
 except ImportError:
-  import _thread as thread # python3
+  import thread  # Python 2
 
 # CONFIGURATION ========================================================
 
@@ -24,38 +25,34 @@ LOW     = 0
 
 def trace(msg):
   print(str(msg))
-  
+
 def write(msg):
   print(str(msg))
-  
-if sys.version_info.major > 2:
-  def ask(msg=""):
-    return input(msg) # python 3
-else:
-  def ask(msg=""):
-    return raw_input(msg) # python 2
-  
-  
+
+def ask(msg=""):
+  return input(msg)
+
+
 # CLASS ================================================================
 
 class GPIOClient:
-  pinmode  = {}
-  pinstate = {}
-
   def __init__(self, server=False):
+    self.pinmode = {}
+    self.pinstate = {}
+    self._serverRunning = False
+    self._kbdThread = None
     if server:
       self.controlInputs(True)
-      
+
   def setmode(self, mode):
     # BCM or BOARD
-    pass # nothing to do here for a simulation
+    pass  # nothing to do here for a simulation
 
   def setup(self, channel, mode):
     self.pinmode[channel] = mode
 
     if mode == IN:
       self.pinstate[channel] = HIGH
-
     elif mode == OUT:
       self.pinstate[channel] = LOW
       self._show()
@@ -65,7 +62,7 @@ class GPIOClient:
       return self.pinstate[channel]
     except KeyError:
       return HIGH
-      
+
   def output(self, channel, value):
     self.pinstate[channel] = self._pinValue(value)
     self._show()
@@ -73,27 +70,22 @@ class GPIOClient:
   def cleanup(self):
     self.pinmode = {}
     self.pinstate = {}
-    
+
   def _pinValue(self, v):
-    if v == None or v == False or v == 0:
+    if v is None or v is False or v == 0:
       return LOW
     return HIGH
 
-  def _show2(self):
-    write("mode:" + str(self.pinmode))
-    write("state:" + str(self.pinstate))
-    write("")
-    
   def _show(self):
     line = "PIN   "
-    for p in range(MIN_PIN, MAX_PIN+1):
+    for p in range(MIN_PIN, MAX_PIN + 1):
       line += LABELS[p]
-      if (p+1) % 4 == 0:
+      if (p + 1) % 4 == 0:
         line += " "
     write(line)
-   
+
     line = "MODE  "
-    for p in range(MIN_PIN, MAX_PIN+1):
+    for p in range(MIN_PIN, MAX_PIN + 1):
       try:
         if self.pinmode[p] == IN:
           line += "I"
@@ -103,12 +95,12 @@ class GPIOClient:
           line += "?"
       except KeyError:
         line += "X"
-      if (p+1) % 4 == 0:
+      if (p + 1) % 4 == 0:
         line += " "
     write(line)
-    
+
     line = "STATE "
-    for p in range(MIN_PIN, MAX_PIN+1):
+    for p in range(MIN_PIN, MAX_PIN + 1):
       try:
         if self.pinstate[p] == 1:
           line += "1"
@@ -119,22 +111,19 @@ class GPIOClient:
           line += "?"
       except KeyError:
         line += "X"
-      if (p+1) % 4 == 0:
+      if (p + 1) % 4 == 0:
         line += " "
     write(line)
     write("")
 
   def changeInput(self, channel, value):
-    if self.pinmode[channel] != IN:
+    if self.pinmode.get(channel) != IN:
       raise ValueError("Pin is not an input")
-    self.pinstate[channel] = self._pinValue(value)        
+    self.pinstate[channel] = self._pinValue(value)
 
-    
+
   # INPUT CONTROL ======================================================
 
-  _serverRunning = False
-  _kbdThread = None
-      
   def controlInputs(self, flag):
     if flag and not self._serverRunning:
       self._startServer()
@@ -144,16 +133,16 @@ class GPIOClient:
   def _startServer(self):
     self._kbdThread = thread.start_new_thread(self._server, ())
     self._serverRunning = True
-    
+
   def _stopServer(self):
-    self._kbdThread.stop()
-    self._kbdThread = None
+    # thread.start_new_thread returns an ID, can't .stop() it
     self._serverRunning = False
+    self._kbdThread = None
 
   def _parse_pinch(self, ch):
     # the index into LABELS is the channel number
-    return LABELS.index(ch)
-    
+    return LABELS.index(ch.upper())
+
   def _getcmd(self):
     while True:
       cmdstr = ask()
@@ -166,22 +155,24 @@ class GPIOClient:
     valuech = cmdstr[1]
     channel = self._parse_pinch(pinch)
     return channel, valuech
-    
+
   def _process(self, channel, valuech):
     if valuech == "I":
-      self.setmode(channel, IN)
+      self.setup(channel, IN)
     elif valuech == "O":
-      self.setmode(channel, OUT)
+      self.setup(channel, OUT)
     elif valuech == "1":
       self.changeInput(channel, True)
     elif valuech == "0":
       self.changeInput(channel, False)
-    
+
   def _server(self):
-    while True:
-      cmdstr = self._getcmd() 
-      channel, valuech = self._parsecmd(cmdstr)
-      #trace("processing: channel:" + str(channel) + " cmd:" + valuech)
-      self._process(channel, valuech)
-  
+    while self._serverRunning:
+      try:
+        cmdstr = self._getcmd()
+        channel, valuech = self._parsecmd(cmdstr)
+        self._process(channel, valuech)
+      except Exception as e:
+        trace("server error: " + str(e))
+
 # END

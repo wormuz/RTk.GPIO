@@ -5,21 +5,27 @@
 
 # SYSTEM AND VERSION VARIANCE ==========================================
 
-#this is for linux
-DEV_TTY    = "/dev/tty*"
+# Linux: USB serial adapters and Arduino CDC devices
+DEV_PATTERNS = ["/dev/ttyUSB*", "/dev/ttyACM*"]
 
-#TODO for mac, it's /dev/cua*???
-  
-  
+# Mac: USB serial
+MAC_PATTERNS = ["/dev/cu.usbserial*", "/dev/cu.usbmodem*", "/dev/tty.usbserial*", "/dev/tty.usbmodem*"]
+
+import sys
+
 # BODY =================================================================
 
 import glob
 
 def scan():
   """ scan devices that might be com ports """
-  devices = glob.glob(DEV_TTY)
-  #print("found " + str(len(devices)) + " devices")
-  return devices
+  devices = []
+  patterns = DEV_PATTERNS
+  if sys.platform == 'darwin':
+    patterns = patterns + MAC_PATTERNS
+  for pattern in patterns:
+    devices.extend(glob.glob(pattern))
+  return sorted(devices)
 
 
 # TEST HARNESS =========================================================

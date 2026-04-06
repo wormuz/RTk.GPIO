@@ -1,49 +1,31 @@
 # portscan.py  22/04/2014  D.J.Whale
+# Updated 2026-04-07: auto-detect single device, Python 3 compat
 #
-# Prompt user and find a newly inserted com port
-# Appropriately configured this should work on mac an linux
+# Find a serial port for the Arduino board.
+# Supports: cached name, auto-detect (single device), interactive scan.
 
 import time
+import sys
+import os
 
 # CONFIGURATION ========================================================
 
-# The file that will be created to cache the found port name
 CACHE_NAME = "portscan.cache"
-
-# The time, in seconds, to wait for any drivers to unload.
-# When the user presses ENTER after the "remove device" message,
-# it sometimes takes some computers a little bit of time to safely
-# unload the driver. This prevents false readings.
 DRIVER_UNLOAD_TIME = 2
-
-# The time, in seconds, to wait for any drivers to load.
-# When the user presses ENTER after the "insert device" message,
-# it sometimes takes some computers a little bit of time to safely
-# load the driver. This prevents false readings.
-
 DRIVER_LOAD_TIME = 4
 
 def message(msg):
   print(msg)
-  
-def nl():
-  print("\n")
+
+ask = input
 
 
-# SYSTEM AND VERSION VARIANCE ==========================================
+# PLATFORM =============================================================
 
-import sys
-import os
-
-if sys.version_info.major >= 3:
-  ask = input
-else:
-  ask = raw_input
-    
-if os.name == 'nt': #sys.platform == 'win32':
-    import ports_win32 as ports
+if os.name == 'nt':
+    from . import ports_win32 as ports
 elif os.name == 'posix':
-    import ports_unix as ports
+    from . import ports_unix as ports
 else:
     raise ImportError("No port lister available for:" + os.name)
 
@@ -51,151 +33,133 @@ else:
 # HELPERS ==============================================================
 
 def getYesNo(msg):
-  """ Ask user for yes/no and return a boolean """
-  answer = ask(msg + " (Y/N)")
-  answer = answer.upper()
-  if answer in ['YES', 'Y']:
-    return True
-  return False
-  
-def getAdded(before, after):
-  """ Find any items in 'after' that are not in 'before' """
+  answer = ask(msg + " (Y/N) ")
+  return answer.strip().upper() in ('YES', 'Y')
 
-  #message("before:" + str(before))
-  #message("after:" + str(after))
-  
-  # Any items in 'before' are removed from 'after'
-  # The remaining list is of the newly added items
-  
+def getAdded(before, after):
+  after = list(after)
   for b in before:
     try:
-      i = after.index(b)
       after.remove(b)
     except ValueError:
       pass
+  return after
 
-  #message("new:" + str(after))
-  return after  
-  
-  
-# BODY =================================================================
+
+# AUTO-DETECT ==========================================================
+
+def autoDetect():
+  """Try to auto-detect a single serial device without user interaction."""
+  devices = ports.scan()
+  if len(devices) == 1:
+    dev = devices[0]
+    message("Auto-detected: " + dev)
+    return dev
+  return None
+
+
+# INTERACTIVE SCAN =====================================================
 
 def scan():
-  """ scan devices repeatedly until new one found, or user gives in """
+  """Scan devices by asking user to unplug/replug."""
   message("Scanning for serial ports")
   while True:
-    # prompt to remove device
     ask("remove device, then press ENTER")
-
     message("scanning...")
-    time.sleep(DRIVER_UNLOAD_TIME) # to allow driver to unload
+    time.sleep(DRIVER_UNLOAD_TIME)
     before = ports.scan()
-    beforec = len(before)
-    message("found " + str(beforec) + " devices")
+    message("found " + str(len(before)) + " devices")
 
-    # prompt to insert device
     ask("plug in device, then press ENTER")
-
     message("scanning...")
-    time.sleep(DRIVER_LOAD_TIME) # to allow driver to load
+    time.sleep(DRIVER_LOAD_TIME)
     after = ports.scan()
-    afterc = len(after)
-    message("found " + str(afterc) + " devices")
+    message("found " + str(len(after)) + " devices")
 
-    # diff the lists
     added = getAdded(before, after)
-    
+
     if len(added) == 0:
-      # No new ones, try again?
       message("no new devices detected")
-      yes = getYesNo("Try again?")
-      if yes:
+      if getYesNo("Try again?"):
         continue
       return None
-    
     elif len(added) > 1:
-      # Show a menu and get a choice
       while True:
         message("more than one new device found")
         for i in range(len(added)):
-          message(str(i+1) + ":" + added[i])
-        a = ask("which device do you want to try?")
+          message(str(i + 1) + ":" + added[i])
+        a = ask("which device do you want to try? ")
         try:
           a = int(a)
-          if a < 1 or a > len(added):
-            message("out of range, try again")
-            continue
-          a -= 1
-          return added[a]
-        except:
+          if 1 <= a <= len(added):
+            return added[a - 1]
+          message("out of range, try again")
+        except ValueError:
           pass
-
-    else: 
-      # only 1 new, select it
-      message("found 1 new device")
+    else:
       dev = added[0]
-      message("selected:" + dev)
+      message("found 1 new device: " + dev)
       return dev
-      
-    
+
+
+# CACHE ================================================================
+
 def remember(device):
-  """ Remember this device for next time """
-  # prompt if you want it remembered
-  yes = getYesNo("Do you want this device to be remembered?")
-
-  if yes:
-    # Remember it
-    f = open(CACHE_NAME, "w")
+  with open(CACHE_NAME, "w") as f:
     f.write(device + "\n")
-    f.close()
 
-def find():
-  """ Try to find a newly inserted device, by prompting user """
-  dev = scan()
-  if dev != None:
-    remember(dev)
-  return dev
-  
 def forget():
-  """forget the remembered cached name if stored"""
-  # Remove any existing cache file
   try:
     os.remove(CACHE_NAME)
-  except:
+  except OSError:
     pass
-  
+
 def getName():
-  """read the remembered cached named, None if none stored"""
   try:
-    f = open(CACHE_NAME, "r")
-    name = f.readline().strip()
-    f.close()
-    return name  
-  except IOError:
-    message("could not open cache file")
+    with open(CACHE_NAME, "r") as f:
+      name = f.readline().strip()
+      if name and os.path.exists(name):
+        return name
+      return None
+  except (IOError, OSError):
     return None
 
+
+# FIND =================================================================
+
+def find():
+  dev = autoDetect()
+  if dev is not None:
+    remember(dev)
+    return dev
+  dev = scan()
+  if dev is not None:
+    remember(dev)
+  return dev
+
+
+# MAIN =================================================================
+
 def main():
-  message("*" * 79)
-  message("SERIAL PORT SCANNER PROGRAM")
-  message("*" * 79)
-  
+  message("*" * 60)
+  message("SERIAL PORT SCANNER")
+  message("*" * 60)
+
   n = getName()
-  if n == None:
-    message("No name remembered")
+  if n is None:
+    message("No cached port")
   else:
-    message("Already remembered:" + n)
+    message("Cached: " + n)
     message("forgetting...")
     forget()
-    
+
   d = find()
-  if d == None:
+  if d is None:
     message("nothing found")
   else:
-    message("found device:" + d)
+    message("found device: " + d)
 
-# TESTER  
 if __name__ == "__main__":
   main()
-  
+
 # END

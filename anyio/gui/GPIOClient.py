@@ -1,4 +1,5 @@
 # anyio/gui/GPIOClient  22/04/2014  D.J.Whale
+# Updated 2026-04-07: Python 3 fixes (INPUT→IN, setup signature)
 #
 # A class based interface to the gui GPIO simulator
 
@@ -18,34 +19,29 @@ LOW     = 0
 
 def trace(msg):
   print(str(msg))
-  
+
 def write(msg):
   print(str(msg))
-  
-  
-  
+
+
 # CLASS ================================================================
 
 class GPIOClient:
-  pinmode  = {}
-  pinstate = {}
-
   def __init__(self):
-    write("TODO - not yet implemented")
-    #TODO use Tkinter to build a window with buttons and leds on it
-    pass
-      
-  def setup(mode):
+    self.pinmode = {}
+    self.pinstate = {}
+    write("GUI GPIO simulator - not yet implemented (placeholder)")
+
+  def setmode(self, mode):
     # BCM or BOARD
     pass
 
-  def setmode(self, channel, mode):
+  def setup(self, channel, mode):
     self.pinmode[channel] = mode
 
-    if mode == INPUT:
+    if mode == IN:
       self.pinstate[channel] = HIGH
-
-    elif mode == OUTPUT:
+    elif mode == OUT:
       self.pinstate[channel] = LOW
       self._update()
 
@@ -54,7 +50,7 @@ class GPIOClient:
       return self.pinstate[channel]
     except KeyError:
       return HIGH
-      
+
   def output(self, channel, value):
     self.pinstate[channel] = self._pinValue(value)
     self._update()
@@ -62,20 +58,19 @@ class GPIOClient:
   def cleanup(self):
     self.pinmode = {}
     self.pinstate = {}
-    
+
   def _pinValue(self, v):
-    if v == None or v == False or v == 0:
+    if v is None or v is False or v == 0:
       return LOW
     return HIGH
-    
+
   def _update(self):
-    # show mode of each pin
-    # show state of each pin
-    pass # TODO   
+    # TODO: use Tkinter to build a window with buttons and leds on it
+    pass
 
   def changeInput(self, channel, value):
-    if self.pinmode[channel] != INPUT:
+    if self.pinmode.get(channel) != IN:
       raise ValueError("Pin is not an input")
-    self.pinstate[channel] = self._pinValue(value)        
-  
+    self.pinstate[channel] = self._pinValue(value)
+
 # END
