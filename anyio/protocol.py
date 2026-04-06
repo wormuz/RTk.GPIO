@@ -111,28 +111,40 @@ class GPIOClient:
     self._probe_firmware()
 
   def _probe_firmware(self):
-    """Probe for v2 firmware by sending R and checking for OK response."""
+    """Probe for v2 firmware by sending V (version query).
+
+    V is safe on both v1 and v2:
+    - v1: ignores unknown commands (no response or garbage)
+    - v2: returns version string ending with \\n
+    We detect v2 by looking for 'v2' in the response.
+    R command is NOT safe for probing — v1 interprets 'R' as pin 17 latch.
+    """
+    # Drain any pending startup data
+    time.sleep(0.3)
     try:
-      # Drain any pending data
-      self.wire.read(64, minsize=0, timeout=0.1)
+      self.wire.read(128, minsize=0, timeout=0.2)
     except Exception:
       pass
+
     try:
-      self._write("R")
-      time.sleep(0.15)
-      resp = self._read(2, timeout=0.3)
-      if len(resp) >= 2 and resp[0:2] == b'OK':
+      self._write("V")
+      time.sleep(0.3)
+      resp = self._read(64, minsize=0, timeout=0.5)
+      resp_str = resp.decode('ascii', errors='replace').strip() if resp else ""
+      if 'v2' in resp_str.lower():
         self.enhanced = True
-        self.trace("Firmware: v2 (enhanced mode)")
+        self.trace("Firmware: v2 enhanced (%s)" % resp_str)
       else:
         self.enhanced = False
-        self.trace("Firmware: v1 (legacy mode)")
+        self.trace("Firmware: v1 legacy")
     except Exception:
       self.enhanced = False
       self.trace("Firmware: v1 (probe failed, assuming legacy)")
-    # Drain any remaining data after probe
+
+    # Drain anything left over
+    time.sleep(0.1)
     try:
-      self.wire.read(64, minsize=0, timeout=0.1)
+      self.wire.read(128, minsize=0, timeout=0.1)
     except Exception:
       pass
 
@@ -144,37 +156,59 @@ class GPIOClient:
     pinch = _pinch(channel)
     modech = _modech(mode)
     self._write(pinch + modech)
+    if not self.enhanced:
+      # v1 firmware echoes acknowledgement — drain
+      time.sleep(0.005)
+      try:
+        self.wire.serial.reset_input_buffer()
+      except Exception:
+        pass
 
   def input(self, channel):
     pinch = _pinch(channel)
     self._write(pinch + GPIO_READ)
 
     if self.enhanced:
-      # v2: response is 2 bytes: pin_char + value (no \r\n)
+      # v2 firmware: response is 2 bytes only: pin_char + value
       v = self._read(2, timeout=0.5)
     else:
-      # v1: response is pin_char + value + \r\n (4 bytes)
-      retries = 0
-      v = b''
-      while retries < 10:
-        v = self._read(4, termset="\r\n", timeout=0.5)
-        if len(v) >= 2:
-          break
-        self.trace("retrying read (%d)" % retries)
-        retries += 1
+      # v1 firmware echoes the command AND sends a response, both \n-terminated.
+      # First line: echo (raw pin byte + \n)
+      # Second line: response (pin_ascii + value + \r\n)
+      try:
+        self.wire.serial.timeout = 0.5
+        _echo = self.wire.serial.readline()  # discard echo
+        v = self.wire.serial.readline()      # actual response
+      except Exception:
+        v = b''
+
+    self.trace("input read back:" + repr(v))
 
     if len(v) < 2:
       error("No response for pin %d" % channel)
       return False
 
-    self.trace("input read back:" + repr(v))
-    valuech = v[1]
-    return _parse_valuech(valuech)
+    # Response: pin_char + value('0'/'1') + optional \r\n
+    # Pin chars: 'a'(0) to 'a'+27 = '|'(27) — includes non-alpha {, |
+    # Strategy: find '0' or '1' that is preceded by a pin-range char
+    for i in range(len(v) - 1):
+      val = v[i + 1] if isinstance(v[i + 1], int) else ord(v[i + 1])
+      if val == ord('0') or val == ord('1'):
+        return val == ord('1')
+
+    error("No valid pin response in: %r" % v)
+    return False
 
   def output(self, channel, value):
     ch = _pinch(channel)
     v = _valuech(value)
     self._write(ch + v)
+    if not self.enhanced:
+      time.sleep(0.005)
+      try:
+        self.wire.serial.reset_input_buffer()
+      except Exception:
+        pass
 
   def pull(self, channel, mode):
     """Set pull-up/pull-down/none on a pin.
@@ -183,6 +217,12 @@ class GPIOClient:
     ch = _pinch(channel)
     p = _pullch(mode)
     self._write(ch + p)
+    if not self.enhanced:
+      time.sleep(0.005)
+      try:
+        self.wire.serial.reset_input_buffer()
+      except Exception:
+        pass
 
   def spi_transfer(self, data):
     """Hardware SPI transfer (v2 only). Send one byte, receive one byte.
