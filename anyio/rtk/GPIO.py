@@ -85,6 +85,22 @@ def pull(channel, mode):
   """Set pull resistor. mode: PULL_UP (1), PULL_DOWN (0), PULL_NONE (-1)"""
   instance.pull(channel, mode)
 
+def pwm_start(channel, freq_hz):
+  """Start PWM at freq_hz (1-65535 Hz), 50% duty. Returns True if OK."""
+  return instance.pwm_start(channel, freq_hz)
+
+def pwm_duty(channel, duty):
+  """Set PWM duty. Float 0.0-1.0 or int 0-255."""
+  instance.pwm_duty(channel, duty)
+
+def pwm_stop(channel):
+  """Stop PWM, return pin to GPIO mode."""
+  instance.pwm_stop(channel)
+
+def tone(channel, freq_hz, duration=None):
+  """Play tone. If duration (sec) given, stops automatically."""
+  return instance.tone(channel, freq_hz, duration)
+
 def spi_transfer(data):
   """Hardware SPI byte transfer (v2 firmware only). Returns received byte."""
   return instance.spi_transfer(data)

@@ -224,6 +224,53 @@ class GPIOClient:
       except Exception:
         pass
 
+  def pwm_start(self, channel, freq_hz):
+    """Start PWM on pin at given frequency (Hz), 50% duty.
+    freq_hz: 1-65535 Hz. Returns True if firmware acknowledged.
+    PWM-capable pins: GP4, GP9, GP10, GP16, GP18, GP20, GP26.
+    """
+    if not self.enhanced:
+      error("pwm_start requires v2.2+ firmware")
+      return False
+    ch = _pinch(channel)
+    freq_hz = max(1, min(65535, int(freq_hz)))
+    h = "%04X" % freq_hz
+    self._write(ch + "W" + h)
+    # Read 'K' (ok) or 'E' (error)
+    try:
+      self.wire.serial.timeout = 0.5
+      resp = self.wire.serial.read(1)
+      return resp == b'K'
+    except Exception:
+      return False
+
+  def pwm_duty(self, channel, duty):
+    """Set PWM duty cycle. duty: 0.0-1.0 (float) or 0-255 (int).
+    Must call pwm_start first.
+    """
+    if not self.enhanced:
+      return
+    ch = _pinch(channel)
+    if isinstance(duty, float):
+      duty_byte = max(0, min(255, int(duty * 255)))
+    else:
+      duty_byte = max(0, min(255, int(duty)))
+    h = "%02X" % duty_byte
+    self._write(ch + "P" + h)
+
+  def pwm_stop(self, channel):
+    """Stop PWM on pin, return to GPIO mode."""
+    ch = _pinch(channel)
+    self._write(ch + "X")
+
+  def tone(self, channel, freq_hz, duration=None):
+    """Play a tone at freq_hz on pin. If duration given, stop after that many seconds."""
+    ok = self.pwm_start(channel, freq_hz)
+    if ok and duration is not None:
+      time.sleep(duration)
+      self.pwm_stop(channel)
+    return ok
+
   def spi_transfer(self, data):
     """Hardware SPI transfer (v2 only). Send one byte, receive one byte.
     Uses GP11=SCK, GP10=MOSI, GP9=MISO.
